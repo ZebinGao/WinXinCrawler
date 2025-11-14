@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>微信公众号文章爬虫</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <style>
+        .fade-enter-active, .fade-leave-active {
+            transition: opacity 0.5s;
+        }
+        .fade-enter-from, .fade-leave-to {
+            opacity: 0;
+        }
+        .slide-enter-active, .slide-leave-active {
+            transition: all 0.3s ease;
+        }
+        .slide-enter-from {
+            transform: translateX(-100%);
+        }
+        .slide-leave-to {
+            transform: translateX(100%);
+        }
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+        .article-card {
+            transition: all 0.3s ease;
+        }
+        .article-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        .loading-spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .status-badge {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="app">
+        <!-- Header -->
+        <header class="bg-white shadow-sm border-b">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <i class="ri-spider-line text-2xl text-blue-600 mr-3"></i>
+                        <h1 class="text-xl font-bold text-gray-900">微信公众号文章爬虫</h1>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <span class="text-sm text-gray-500">
+                            <i class="ri-database-2-line"></i>
+                            总文章数: {{ totalArticles }}
+                        </span>
+                        <span class="text-sm text-gray-500">
+                            <i class="ri-time-line"></i>
+                            最后更新: {{ lastUpdateTime }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <!-- Control Panel -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+                <h2 class="text-lg font-semibold mb-4 flex items-center">
+                    <i class="ri-settings-3-line mr-2"></i>
+                    控制面板
+                </h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Crawler Control -->
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                公众号名称
+                            </label>
+                            <input 
+                                v-model="accountName" 
+                                type="text" 
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="冬日焰火"
+                                :disabled="isCrawling"
+                            >
+                        </div>
+                        <button 
+                            @click="startCrawling" 
+                            :disabled="isCrawling"
+                            class="w-full bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
+                        >
+                            <i class="ri-play-line mr-2" v-if="!isCrawling"></i>
+                            <div class="loading-spinner mr-2" v-if="isCrawling"></div>
+                            {% if isCrawling %}正在爬取...{% else %}开始爬取{% endif %}
+                        </button>
+                    </div>
+
+                    <!-- Status Display -->
+                    <div class="space-y-4">
+                        <div class="bg-gray-50 rounded-lg p-4">
+                            <h3 class="text-sm font-medium text-gray-700 mb-2">爬取状态</h3>
+                            <div class="space-y-2">
+                                <div class="flex justify-between text-sm">
+                                    <span>状态:</span>
+                                    <span :class="getStatusClass(crawlStatus.status)" class="font-medium">
+                                        {{ getStatusText(crawlStatus.status) }}
+                                    </span>
+                                </div>
+                                <div class="flex justify-between text-sm">
+                                    <span>已爬取:</span>
+                                    <span class="font-medium">{{ crawlStatus.crawled }} / {{ crawlStatus.total }}</span>
+                                </div>
+                                <div class="flex justify-between text-sm">
+                                    <span>进度:</span>
+                                    <span class="font-medium">{{ crawlStatus.progress.toFixed(1) }}%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div class="space-y-4">
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-700 mb-2">爬取进度</h3>
+                            <div class="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                                <div 
+                                    class="progress-bar bg-blue-600 h-full rounded-full flex items-center justify-center text-xs text-white"
+                                    :style="{ width: crawlStatus.progress + '%' }"
+                                >
+                                    <span v-if="crawlStatus.progress > 10">{{ crawlStatus.progress.toFixed(1) }}%</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="crawlStatus.currentArticle" class="text-sm text-gray-600 truncate">
+                            <i class="ri-article-line"></i>
+                            当前: {{ crawlStatus.currentArticle }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search and Filter -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+                <div class="flex flex-col lg:flex-row gap-4">
+                    <div class="flex-1">
+                        <div class="relative">
+                            <input 
+                                v-model="searchQuery" 
+                                @input="searchArticles"
+                                type="text" 
+                                class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="搜索文章标题或内容..."
+                            >
+                            <i class="ri-search-line absolute left-3 top-3 text-gray-400"></i>
+                        </div>
+                    </div>
+                    <div class="flex gap-2">
+                        <select 
+                            v-model="selectedCategory" 
+                            @change="filterByCategory"
+                            class="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                            <option value="">所有分类</option>
+                            <option value="技术">技术</option>
+                            <option value="生活">生活</option>
+                            <option value="教育">教育</option>
+                            <option value="商业">商业</option>
+                            <option value="文化">文化</option>
+                            <option value="健康">健康</option>
+                            <option value="科技">科技</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <button 
+                            @click="refreshArticles" 
+                            class="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700 transition-colors"
+                        >
+                            <i class="ri-refresh-line"></i>
+                            刷新
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Articles List -->
+            <div class="bg-white rounded-lg shadow-md">
+                <div class="p-6 border-b">
+                    <h2 class="text-lg font-semibold flex items-center justify-between">
+                        <span>
+                            <i class="ri-article-line mr-2"></i>
+                            文章列表
+                        </span>
+                        <span class="text-sm text-gray-500">
+                            共 {{ filteredArticles.length }} 篇文章
+                        </span>
+                    </h2>
+                </div>
+
+                <!-- Loading State -->
+                <div v-if="loading" class="p-8 text-center">
+                    <div class="loading-spinner mx-auto mb-4"></div>
+                    <p class="text-gray-600">加载中...</p>
+                </div>
+
+                <!-- Articles Grid -->
+                <div v-else-if="filteredArticles.length > 0" class="p-6">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <article 
+                            v-for="article in paginatedArticles" 
+                            :key="article._id"
+                            class="article-card bg-white border rounded-lg overflow-hidden hover:shadow-lg cursor-pointer"
+                            @click="openArticle(article)"
+                        >
+                            <div v-if="article.cover_image" class="h-48 overflow-hidden">
+                                <img 
+                                    :src="article.cover_image" 
+                                    :alt="article.title"
+                                    class="w-full h-full object-cover"
+                                    @error="handleImageError"
+                                >
+                            </div>
+                            <div class="p-4">
+                                <h3 class="font-semibold text-lg mb-2 line-clamp-2">{{ article.title }}</h3>
+                                <p class="text-gray-600 text-sm mb-3 line-clamp-3">{{ article.description || article.content?.substring(0, 100) + '...' }}</p>
+                                
+                                <div class="flex items-center justify-between text-xs text-gray-500 mb-3">
+                                    <span class="flex items-center">
+                                        <i class="ri-user-line mr-1"></i>
+                                        {{ article.author || article.account_name }}
+                                    </span>
+                                    <span class="flex items-center">
+                                        <i class="ri-time-line mr-1"></i>
+                                        {{ formatDate(article.publish_time) }}
+                                    </span>
+                                </div>
+
+                                <div class="flex items-center justify-between">
+                                    <div class="flex gap-3 text-xs text-gray-500">
+                                        <span v-if="article.read_count" class="flex items-center">
+                                            <i class="ri-eye-line mr-1"></i>
+                                            {{ article.read_count }}
+                                        </span>
+                                        <span v-if="article.like_count" class="flex items-center">
+                                            <i class="ri-heart-line mr-1"></i>
+                                            {{ article.like_count }}
+                                        </span>
+                                        <span v-if="article.comment_count" class="flex items-center">
+                                            <i class="ri-message-3-line mr-1"></i>
+                                            {{ article.comment_count }}
+                                        </span>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <span v-if="article.category" class="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">
+                                            {{ article.category }}
+                                        </span>
+                                        <span v-if="article.is_original" class="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">
+                                            原创
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="mt-8 flex justify-center">
+                        <nav class="flex items-center space-x-2">
+                            <button 
+                                @click="currentPage > 1 && currentPage--"
+                                :disabled="currentPage === 1"
+                                class="px-3 py-1 border rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                            >
+                                <i class="ri-arrow-left-s-line"></i>
+                            </button>
+                            
+                            <span class="px-3 py-1 text-sm">
+                                第 {{ currentPage }} 页，共 {{ totalPages }} 页
+                            </span>
+                            
+                            <button 
+                                @click="currentPage < totalPages && currentPage++"
+                                :disabled="currentPage === totalPages"
+                                class="px-3 py-1 border rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                            >
+                                <i class="ri-arrow-right-s-line"></i>
+                            </button>
+                        </nav>
+                    </div>
+                </div>
+
+                <!-- Empty State -->
+                <div v-else class="p-8 text-center">
+                    <i class="ri-inbox-line text-4xl text-gray-400 mb-4"></i>
+                    <p class="text-gray-600">暂无文章</p>
+                </div>
+            </div>
+        </main>
+
+        <!-- Article Modal -->
+        <div v-if="selectedArticle" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" @click="closeArticle">
+            <div class="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden" @click.stop>
+                <div class="p-6 border-b flex justify-between items-start">
+                    <div class="flex-1">
+                        <h2 class="text-xl font-bold mb-2">{{ selectedArticle.title }}</h2>
+                        <div class="flex items-center gap-4 text-sm text-gray-600">
+                            <span><i class="ri-user-line mr-1"></i>{{ selectedArticle.author || selectedArticle.account_name }}</span>
+                            <span><i class="ri-time-line mr-1"></i>{{ formatDate(selectedArticle.publish_time) }}</span>
+                            <span v-if="selectedArticle.category" class="px-2 py-1 bg-blue-100 text-blue-800 rounded">{{ selectedArticle.category }}</span>
+                        </div>
+                    </div>
+                    <button @click="closeArticle" class="text-gray-500 hover:text-gray-700">
+                        <i class="ri-close-line text-xl"></i>
+                    </button>
+                </div>
+                <div class="p-6 overflow-y-auto max-h-[60vh]">
+                    <div v-if="selectedArticle.cover_image" class="mb-4">
+                        <img :src="selectedArticle.cover_image" :alt="selectedArticle.title" class="w-full rounded-lg">
+                    </div>
+                    <div class="prose max-w-none" v-html="formatContent(selectedArticle.content)"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    // Crawler state
+                    accountName: '冬日焰火',
+                    isCrawling: false,
+                    crawlStatus: {
+                        status: 'idle',
+                        progress: 0,
+                        crawled: 0,
+                        total: 0,
+                        currentArticle: ''
+                    },
+                    
+                    // Articles data
+                    articles: [],
+                    filteredArticles: [],
+                    loading: false,
+                    searchQuery: '',
+                    selectedCategory: '',
+                    selectedArticle: null,
+                    
+                    // Pagination
+                    currentPage: 1,
+                    perPage: 10,
+                    
+                    // Socket connection
+                    socket: null,
+                    
+                    // Statistics
+                    totalArticles: 0,
+                    lastUpdateTime: '-'
+                }
+            },
+            
+            computed: {
+                totalPages() {
+                    return Math.ceil(this.filteredArticles.length / this.perPage);
+                },
+                
+                paginatedArticles() {
+                    const start = (this.currentPage - 1) * this.perPage;
+                    const end = start + this.perPage;
+                    return this.filteredArticles.slice(start, end);
+                }
+            },
+            
+            mounted() {
+                this.initSocket();
+                this.loadArticles();
+                this.checkStatus();
+            },
+            
+            methods: {
+                initSocket() {
+                    this.socket = io();
+                    
+                    this.socket.on('connect', () => {
+                        console.log('Connected to server');
+                    });
+                    
+                    this.socket.on('crawl_progress', (data) => {
+                        this.updateCrawlStatus(data);
+                    });
+                    
+                    this.socket.on('status', (data) => {
+                        console.log('Status:', data.message);
+                    });
+                },
+                
+                async startCrawling() {
+                    if (this.isCrawling) return;
+                    
+                    try {
+                        const response = await fetch('/api/start_crawl', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                account_name: this.accountName
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            this.isCrawling = true;
+                            this.crawlStatus.status = 'crawling';
+                            this.crawlStatus.progress = 0;
+                        } else {
+                            alert('启动爬取失败: ' + result.message);
+                        }
+                    } catch (error) {
+                        console.error('Error starting crawl:', error);
+                        alert('启动爬取失败');
+                    }
+                },
+                
+                updateCrawlStatus(data) {
+                    this.crawlStatus = { ...this.crawlStatus, ...data };
+                    
+                    if (data.status === 'completed') {
+                        this.isCrawling = false;
+                        this.loadArticles();
+                        this.lastUpdateTime = new Date().toLocaleTimeString();
+                    } else if (data.status === 'error') {
+                        this.isCrawling = false;
+                        alert('爬取过程中出现错误: ' + data.error);
+                    }
+                },
+                
+                async checkStatus() {
+                    try {
+                        const response = await fetch('/api/status');
+                        const status = await response.json();
+                        
+                        this.isCrawling = status.is_running;
+                        this.crawlStatus = {
+                            status: status.is_running ? 'crawling' : 'idle',
+                            progress: status.progress,
+                            crawled: status.crawled_articles,
+                            total: status.total_articles,
+                            currentArticle: ''
+                        };
+                    } catch (error) {
+                        console.error('Error checking status:', error);
+                    }
+                },
+                
+                async loadArticles() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/articles');
+                        const data = await response.json();
+                        
+                        this.articles = data.articles;
+                        this.filteredArticles = this.articles;
+                        this.totalArticles = data.total;
+                        this.currentPage = 1;
+                    } catch (error) {
+                        console.error('Error loading articles:', error);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                
+                async searchArticles() {
+                    if (this.searchQuery.trim()) {
+                        this.loading = true;
+                        try {
+                            const response = await fetch(`/api/search?q=${encodeURIComponent(this.searchQuery)}&page=1&per_page=100`);
+                            const data = await response.json();
+                            
+                            this.filteredArticles = data.articles || [];
+                            this.currentPage = 1;
+                        } catch (error) {
+                            console.error('Error searching articles:', error);
+                        } finally {
+                            this.loading = false;
+                        }
+                    } else {
+                        this.filteredArticles = this.articles;
+                    }
+                },
+                
+                filterByCategory() {
+                    if (this.selectedCategory) {
+                        this.filteredArticles = this.articles.filter(article => 
+                            article.category === this.selectedCategory
+                        );
+                    } else {
+                        this.filteredArticles = this.articles;
+                    }
+                    this.currentPage = 1;
+                },
+                
+                refreshArticles() {
+                    this.loadArticles();
+                },
+                
+                openArticle(article) {
+                    this.selectedArticle = article;
+                },
+                
+                closeArticle() {
+                    this.selectedArticle = null;
+                },
+                
+                formatDate(dateString) {
+                    if (!dateString) return '-';
+                    const date = new Date(dateString);
+                    return date.toLocaleDateString('zh-CN', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit'
+                    });
+                },
+                
+                formatContent(content) {
+                    if (!content) return '';
+                    return content.replace(/\n/g, '<br>');
+                },
+                
+                getStatusClass(status) {
+                    const classes = {
+                        'idle': 'text-gray-600',
+                        'crawling': 'text-blue-600 status-badge',
+                        'completed': 'text-green-600',
+                        'error': 'text-red-600'
+                    };
+                    return classes[status] || 'text-gray-600';
+                },
+                
+                getStatusText(status) {
+                    const texts = {
+                        'idle': '空闲',
+                        'crawling': '爬取中',
+                        'completed': '已完成',
+                        'error': '错误'
+                    };
+                    return texts[status] || '未知';
+                },
+                
+                handleImageError(event) {
+                    event.target.src = 'https://via.placeholder.com/400x200?text=No+Image';
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
